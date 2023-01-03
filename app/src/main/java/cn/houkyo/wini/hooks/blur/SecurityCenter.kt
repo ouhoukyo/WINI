@@ -1,30 +1,74 @@
 package cn.houkyo.wini.hooks.blur
 
+import android.content.Context
+import android.graphics.Color
+import android.graphics.ColorMatrixColorFilter
+import android.graphics.RenderEffect
+import android.util.AttributeSet
 import android.view.View
+import android.view.ViewGroup
+import android.widget.ImageView
+import android.widget.ListView
+import android.widget.TextView
 import cn.houkyo.wini.models.ConfigModel
 import cn.houkyo.wini.utils.ColorUtils
 import cn.houkyo.wini.utils.HookUtils
 import de.robv.android.xposed.XC_MethodHook
+import de.robv.android.xposed.XC_MethodReplacement
 import de.robv.android.xposed.XposedBridge
+import de.robv.android.xposed.XposedHelpers
 
 class SecurityCenter(private val classLoader: ClassLoader, config: ConfigModel) {
     val blurRadius = config.securityCenter.dockBackground.blurRadius
     val backgroundColor =
         ColorUtils.hexToColor(config.securityCenter.dockBackground.backgroundColor)
+    val shouldInvertColor = !ColorUtils.isDarkColor(backgroundColor)
+
+    // 反色 同时保持红蓝色变化不大
+    val invertColorRenderEffect = RenderEffect.createColorFilterEffect(
+        ColorMatrixColorFilter(
+            floatArrayOf(
+                1f, 1f, -2f, 0f, 16f,
+                0f, 0f, 0f, 0f, 0f,
+                -3f, 1f, 2f, 0f, 16f,
+                0f, 0f, 0f, 0.85f, 0f
+            )
+        )
+    )
+
+    // 不反转颜色的名单ID或类名
+    // whiteList 不在列表内子元素也会反色
+    val invertColorWhiteList =
+        arrayOf(
+            "lv_main",
+            "second_view"
+        )
+
+    // keepList 列表内元素及其子元素不会反色
+    val keepColorList =
+        arrayOf(
+            "rv_information"
+        )
 
     fun addBlurEffectToDock() {
         val TurboLayoutClass = HookUtils.getClass(
             "com.miui.gamebooster.windowmanager.newbox.TurboLayout",
             classLoader
         ) ?: return
-        var NewboxClass:Class<*>? = null
+        val NewToolBoxTopViewClass = HookUtils.getClass(
+            "com.miui.gamebooster.windowmanager.newbox.NewToolBoxTopView",
+            classLoader
+        ) ?: return
+        val VideoBoxViewClass =
+            HookUtils.getClass("com.miui.gamebooster.videobox.adapter.i", classLoader) ?: return
+
+        var NewboxClass: Class<*>? = null
         TurboLayoutClass.methods.forEach {
-            if(it.name == "getDockLayout"){
+            if (it.name == "getDockLayout") {
                 NewboxClass = it.returnType
             }
         }
-        if(NewboxClass == null){
-            HookUtils.log("Dock Layout is NOT found!")
+        if (NewboxClass == null) {
             return
         }
 
@@ -36,11 +80,13 @@ class SecurityCenter(private val classLoader: ClassLoader, config: ConfigModel) 
                         View.OnAttachStateChangeListener {
                         override fun onViewAttachedToWindow(view: View) {
                             // 已有背景 避免重复添加
+
                             if (view.background != null) {
                                 if (HookUtils.isBlurDrawable(view.background)) {
                                     return;
                                 }
                             }
+
                             view.background =
                                 HookUtils.createBlurDrawable(
                                     view,
@@ -56,5 +102,346 @@ class SecurityCenter(private val classLoader: ClassLoader, config: ConfigModel) 
                     })
             }
         })
+
+        XposedBridge.hookAllConstructors(NewToolBoxTopViewClass, object : XC_MethodHook() {
+            override fun afterHookedMethod(param: MethodHookParam) {
+                val view = param.thisObject as View
+                view.addOnAttachStateChangeListener(
+                    object :
+                        View.OnAttachStateChangeListener {
+                        override fun onViewAttachedToWindow(view: View) {
+                            val viewPaernt = view.parent as ViewGroup
+                            val gameContentLayout = viewPaernt.parent as ViewGroup
+                            if (gameContentLayout.background != null) {
+                                if (HookUtils.isBlurDrawable(gameContentLayout.background)) {
+                                    return;
+                                }
+                            }
+
+                            gameContentLayout.background =
+                                HookUtils.createBlurDrawable(
+                                    gameContentLayout,
+                                    blurRadius,
+                                    40,
+                                    backgroundColor
+                                )
+
+                            if (shouldInvertColor) {
+                                invertViewColor(gameContentLayout)
+
+                                //设置 RenderEffect 后会导致文字动画出现问题，故去除动画
+                                val performanceTextView = XposedHelpers.callMethod(
+                                    param.thisObject,
+                                    "getPerformanceTextView"
+                                ) as View
+                                XposedHelpers.findAndHookMethod(
+                                    performanceTextView.javaClass,
+                                    "a",
+                                    Boolean::class.java,
+                                    object :
+                                        XC_MethodReplacement() {
+                                        override fun replaceHookedMethod(param: MethodHookParam?) {
+                                            param?.result = null
+                                        }
+                                    })
+                            }
+
+                            var headBackground =
+                                HookUtils.getValueByField(param.thisObject, "j")
+                            if (headBackground == null) {
+                                headBackground = HookUtils.getValueByField(param.thisObject, "j")
+                            } else if (!headBackground.javaClass.name.contains("ImageView")) {
+                                headBackground = HookUtils.getValueByField(param.thisObject, "C")
+                            }
+                            if (headBackground == null) {
+                                return
+                            }
+                            if (headBackground.javaClass.name.contains("ImageView")) {
+                                headBackground as ImageView
+                                headBackground.visibility = View.GONE
+                            }
+                        }
+
+                        override fun onViewDetachedFromWindow(view: View) {
+                            val viewPaernt = view.parent as ViewGroup
+                            val gameContentLayout = viewPaernt.parent as ViewGroup
+                            gameContentLayout.background = null
+                        }
+                    })
+            }
+        })
+
+
+        XposedHelpers.findAndHookMethod(
+            VideoBoxViewClass,
+            "a",
+            Context::class.java,
+            Boolean::class.java,
+            object : XC_MethodHook() {
+                override fun afterHookedMethod(param: MethodHookParam) {
+                    val mainContent = HookUtils.getValueByField(param.thisObject, "b") as ViewGroup
+                    mainContent.addOnAttachStateChangeListener(
+                        object :
+                            View.OnAttachStateChangeListener {
+                            override fun onViewAttachedToWindow(view: View) {
+                                if (view.background != null) {
+                                    if (HookUtils.isBlurDrawable(view.background)) {
+                                        return;
+                                    }
+                                }
+
+                                view.background =
+                                    HookUtils.createBlurDrawable(
+                                        view,
+                                        blurRadius,
+                                        40,
+                                        backgroundColor
+                                    )
+
+                                if (shouldInvertColor) {
+                                    invertViewColor(mainContent)
+                                }
+                            }
+
+                            override fun onViewDetachedFromWindow(view: View) {
+                                view.background = null
+                            }
+                        })
+                }
+            })
+
+        if (shouldInvertColor) {
+            val DetailSettingsLayoutClass = HookUtils.getClass(
+                "com.miui.gamebooster.videobox.view.DetailSettingsLayout",
+                classLoader
+            ) ?: return
+            val SrsLevelSeekBarProClass = HookUtils.getClass(
+                "com.miui.gamebooster.videobox.view.SrsLevelSeekBarPro",
+                classLoader
+            ) ?: return
+            val SrsLevelSeekBarInnerViewClass = HookUtils.getClass(
+                "com.miui.gamebooster.videobox.view.c",
+                classLoader
+            ) ?: return
+            val videoBoxWhiteList = arrayOf(
+                "miuix.slidingwidget.widget.SlidingButton",
+                "android.widget.ImageView",
+                "android.widget.CompoundButton",
+                "com.miui.common.widgets.gif.GifImageView",
+                "com.miui.gamebooster.videobox.view.SrsLevelSeekBar",
+                "com.miui.gamebooster.videobox.view.SrsLevelSeekBarPro",
+                "com.miui.gamebooster.videobox.view.VideoEffectImageView",
+                "com.miui.gamebooster.videobox.view.DisplayStyleImageView",
+                "com.miui.gamebooster.videobox.view.c",
+                "com.miui.gamebooster.videobox.view.VBIndicatorView"
+            )
+
+            val gameBoxWhiteList = arrayOf(
+                "audition_view",
+                "miuix.slidingwidget.widget.SlidingButton"
+            )
+
+            val videoBoxKeepList = arrayOf("img_wrapper2")
+            val gameBoxKeepList = arrayOf(
+                "rl_header",
+                "tv_barrage_color_pick",
+                "seekbar_text_size",
+                "seekbar_text_speed"
+            )
+
+            val SecondViewClass =
+                HookUtils.getClass("com.miui.gamebooster.windowmanager.newbox.n", classLoader)
+                    ?: return
+            val AuditionViewClass =
+                HookUtils.getClass("com.miui.gamebooster.customview.AuditionView", classLoader)
+                    ?: return
+
+            XposedBridge.hookAllMethods(
+                DetailSettingsLayoutClass,
+                "setFunctionType",
+                object : XC_MethodHook() {
+                    override fun afterHookedMethod(param: MethodHookParam) {
+                        val marqueeTextView = HookUtils.getValueByField(param.thisObject, "d")
+                        if (marqueeTextView != null) {
+                            marqueeTextView as TextView
+                            marqueeTextView.setTextColor(Color.GRAY)
+                        }
+                        val listView = HookUtils.getValueByField(param.thisObject, "c") as ListView
+                        val listViewAdapterClassName = listView.adapter.javaClass.name
+                        val listViewAdapterInnerClass =
+                            HookUtils.getClass("$listViewAdapterClassName\$a", classLoader)
+                                ?: return
+                        XposedBridge.hookAllMethods(
+                            listViewAdapterInnerClass,
+                            "a",
+                            object : XC_MethodHook() {
+                                override fun afterHookedMethod(param: MethodHookParam) {
+                                    val isSetupFunction =
+                                        param.args[0].toString().contains("BaseModel")
+                                    if (isSetupFunction) {
+                                        listViewAdapterInnerClass.declaredFields.forEach { field ->
+                                            val currentObject = field.get(param.thisObject)
+                                            if (currentObject is ImageView) {
+                                                if (getId(currentObject) == "img1" || getId(
+                                                        currentObject
+                                                    ) == "img2"
+                                                ) {
+                                                    currentObject.setRenderEffect(
+                                                        RenderEffect.createColorFilterEffect(
+                                                            ColorMatrixColorFilter(
+                                                                floatArrayOf(
+                                                                    1f, 0f, 0f, 0f, 0f,
+                                                                    0f, 1f, 0f, 0f, 0f,
+                                                                    0f, 0f, 1f, 0f, 0f,
+                                                                    0.5f, 0.5f, 0.5f, 0f, 0f
+                                                                )
+                                                            )
+                                                        )
+                                                    )
+                                                }
+                                            }
+                                            if (currentObject is View) {
+                                                invertViewColor(
+                                                    currentObject,
+                                                    videoBoxWhiteList,
+                                                    videoBoxKeepList
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            })
+                    }
+                })
+
+            XposedHelpers.findAndHookMethod(SrsLevelSeekBarProClass, "a", Context::class.java,
+                AttributeSet::class.java, Int::class.java, object : XC_MethodHook() {
+                    override fun afterHookedMethod(param: MethodHookParam) {
+                        val bgColorField = SrsLevelSeekBarProClass.getDeclaredField("j")
+                        bgColorField.isAccessible = true
+                        bgColorField.setInt(
+                            param.thisObject,
+                            ColorUtils.addAlphaForColor(Color.GRAY, 150)
+                        )
+
+                        val selectTxtColorField =
+                            SrsLevelSeekBarProClass.getDeclaredField("l")
+                        selectTxtColorField.isAccessible = true
+                        selectTxtColorField.setInt(
+                            param.thisObject,
+                            Color.WHITE
+                        )
+
+                        val normalTxtColorField =
+                            SrsLevelSeekBarProClass.getDeclaredField("l")
+                        normalTxtColorField.isAccessible = true
+                        normalTxtColorField.setInt(
+                            param.thisObject,
+                            Color.WHITE
+                        )
+                    }
+                }
+            )
+
+            XposedHelpers.findAndHookMethod(SrsLevelSeekBarInnerViewClass, "a", Context::class.java,
+                AttributeSet::class.java, Int::class.java, object : XC_MethodHook() {
+                    override fun afterHookedMethod(param: MethodHookParam) {
+                        val bgColorField = SrsLevelSeekBarInnerViewClass.getDeclaredField("h")
+                        bgColorField.isAccessible = true
+                        bgColorField.setInt(
+                            param.thisObject,
+                            ColorUtils.addAlphaForColor(Color.WHITE, 150)
+                        )
+                    }
+                }
+            )
+
+            XposedHelpers.findAndHookMethod(
+                SecondViewClass,
+                "b",
+                View::class.java,
+                object : XC_MethodHook() {
+                    override fun afterHookedMethod(param: MethodHookParam) {
+                        val view = param.args[0] as View
+                        invertViewColor(view, gameBoxWhiteList, gameBoxKeepList)
+                    }
+                })
+        }
+    }
+
+    // 尽量给最外层加 RenderEffect 而不是 最内层
+    // whiteList 不在名单内的子视图依旧反转
+    // keepList 本身及子视图均不反转
+    fun invertViewColor(
+        view: View,
+        whiteList: Array<String> = invertColorWhiteList,
+        keepList: Array<String>? = keepColorList,
+    ) {
+        if (keepList != null) {
+            if (keepList.contains(getId(view))) {
+                return
+            }
+            if (keepList.contains(view.javaClass.name)) {
+                return
+            }
+        }
+        try {
+            if (isChildNeedInvertColor(view, whiteList, keepList)) {
+                view.setRenderEffect(invertColorRenderEffect)
+            } else {
+                if (view is ViewGroup) {
+                    for (index in 0 until view.childCount) {
+                        val childView = view.getChildAt(index)
+                        if (childView != null) {
+                            invertViewColor(childView, whiteList, keepList)
+                        }
+                    }
+                }
+            }
+        } catch (e: Throwable) {
+            HookUtils.log(e.message)
+        }
+    }
+
+    private fun isChildNeedInvertColor(
+        view: View,
+        whiteList: Array<String>,
+        keepList: Array<String>?,
+    ): Boolean {
+        val viewId = getId(view)
+        if (whiteList.contains(viewId)) {
+            return false
+        }
+        if (whiteList.contains(view.javaClass.name)) {
+            return false
+        }
+        if (keepList != null) {
+            if (keepList.contains(getId(view))) {
+                return false
+            }
+            if (keepList.contains(view.javaClass.name)) {
+                return false
+            }
+        }
+        try {
+            if (view is ViewGroup) {
+                for (index in 0 until view.childCount) {
+                    val childView = view.getChildAt(index)
+                    if (childView != null) {
+                        if (!isChildNeedInvertColor(childView, whiteList, keepList)) {
+                            return false
+                        }
+                    }
+                }
+            }
+        } catch (e: Throwable) {
+            HookUtils.log(e.message)
+        }
+        return true
+    }
+
+    private fun getId(view: View): String {
+        return if (view.id == View.NO_ID) "no-id" else view.resources.getResourceName(view.id)
+            .replace("com.miui.securitycenter:id/", "")
     }
 }

@@ -43,4 +43,4 @@
 ```
 
 ### License
-本项目基于[MIT](https://github.com/ouhoukyo/WINI/blob/master/LICENSE)协议开源
+本项目基于[MIT](https://github.com/ouhoukyo/WINI/blob/main/LICENSE)协议开源
