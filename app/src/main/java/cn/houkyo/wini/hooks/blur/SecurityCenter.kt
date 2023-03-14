@@ -1,9 +1,9 @@
 package cn.houkyo.wini.hooks.blur
 
 import android.content.Context
-import android.graphics.Color
-import android.graphics.ColorMatrixColorFilter
-import android.graphics.RenderEffect
+import android.graphics.*
+import android.graphics.drawable.LayerDrawable
+import android.graphics.drawable.VectorDrawable
 import android.util.AttributeSet
 import android.view.View
 import android.view.ViewGroup
@@ -23,6 +23,8 @@ class SecurityCenter(private val classLoader: ClassLoader, config: ConfigModel) 
     val backgroundColor =
         ColorUtils.hexToColor(config.securityCenter.dockBackground.backgroundColor)
     val shouldInvertColor = !ColorUtils.isDarkColor(backgroundColor)
+
+    private var appVersionCode = 40000727
 
     // 反色 同时保持红蓝色变化不大
     val invertColorRenderEffect = RenderEffect.createColorFilterEffect(
@@ -59,8 +61,15 @@ class SecurityCenter(private val classLoader: ClassLoader, config: ConfigModel) 
             "com.miui.gamebooster.windowmanager.newbox.NewToolBoxTopView",
             classLoader
         ) ?: return
-        val VideoBoxViewClass =
-            HookUtils.getClass("com.miui.gamebooster.videobox.adapter.i", classLoader) ?: return
+        var VideoBoxViewClass =
+            HookUtils.getClass("com.miui.gamebooster.videobox.adapter.i", classLoader)
+        var VideoBoxViewMethodName = "a"
+        if (VideoBoxViewClass == null) {
+            // v7.4.9
+            appVersionCode = 40000749
+            VideoBoxViewClass = HookUtils.getClass("t7.i", classLoader) ?: return
+            VideoBoxViewMethodName = "i"
+        }
 
         var NewboxClass: Class<*>? = null
         TurboLayoutClass.methods.forEach {
@@ -136,7 +145,7 @@ class SecurityCenter(private val classLoader: ClassLoader, config: ConfigModel) 
                                 ) as View
                                 XposedHelpers.findAndHookMethod(
                                     performanceTextView.javaClass,
-                                    "a",
+                                    if (appVersionCode >= 40000749) "e" else "a",
                                     Boolean::class.java,
                                     object :
                                         XC_MethodReplacement() {
@@ -174,7 +183,7 @@ class SecurityCenter(private val classLoader: ClassLoader, config: ConfigModel) 
 
         XposedHelpers.findAndHookMethod(
             VideoBoxViewClass,
-            "a",
+            VideoBoxViewMethodName,
             Context::class.java,
             Boolean::class.java,
             object : XC_MethodHook() {
@@ -219,10 +228,16 @@ class SecurityCenter(private val classLoader: ClassLoader, config: ConfigModel) 
                 "com.miui.gamebooster.videobox.view.SrsLevelSeekBarPro",
                 classLoader
             ) ?: return
-            val SrsLevelSeekBarInnerViewClass = HookUtils.getClass(
+            var SrsLevelSeekBarInnerViewClass = HookUtils.getClass(
                 "com.miui.gamebooster.videobox.view.c",
                 classLoader
-            ) ?: return
+            )
+            if (SrsLevelSeekBarInnerViewClass == null) {
+                SrsLevelSeekBarInnerViewClass = HookUtils.getClass(
+                    "b8.c",
+                    classLoader
+                ) ?: return
+            }
             val videoBoxWhiteList = arrayOf(
                 "miuix.slidingwidget.widget.SlidingButton",
                 "android.widget.ImageView",
@@ -233,6 +248,7 @@ class SecurityCenter(private val classLoader: ClassLoader, config: ConfigModel) 
                 "com.miui.gamebooster.videobox.view.VideoEffectImageView",
                 "com.miui.gamebooster.videobox.view.DisplayStyleImageView",
                 "com.miui.gamebooster.videobox.view.c",
+                "b8.c",
                 "com.miui.gamebooster.videobox.view.VBIndicatorView"
             )
 
@@ -249,9 +265,17 @@ class SecurityCenter(private val classLoader: ClassLoader, config: ConfigModel) 
                 "seekbar_text_speed"
             )
 
-            val SecondViewClass =
+            var SecondViewClass =
                 HookUtils.getClass("com.miui.gamebooster.windowmanager.newbox.n", classLoader)
-                    ?: return
+            var SecondViewMethodName = "b"
+
+            if (appVersionCode >= 40000749) {
+                SecondViewClass = HookUtils.getClass(
+                    "com.miui.gamebooster.windowmanager.newbox.j",
+                    classLoader
+                ) ?: return
+                SecondViewMethodName = "B"
+            }
             val AuditionViewClass =
                 HookUtils.getClass("com.miui.gamebooster.customview.AuditionView", classLoader)
                     ?: return
@@ -314,7 +338,9 @@ class SecurityCenter(private val classLoader: ClassLoader, config: ConfigModel) 
                     }
                 })
 
-            XposedHelpers.findAndHookMethod(SrsLevelSeekBarProClass, "a", Context::class.java,
+            XposedHelpers.findAndHookMethod(
+                SrsLevelSeekBarProClass,
+                if (appVersionCode >= 40000749) "b" else "a", Context::class.java,
                 AttributeSet::class.java, Int::class.java, object : XC_MethodHook() {
                     override fun afterHookedMethod(param: MethodHookParam) {
                         val bgColorField = SrsLevelSeekBarProClass.getDeclaredField("j")
@@ -358,11 +384,41 @@ class SecurityCenter(private val classLoader: ClassLoader, config: ConfigModel) 
 
             XposedHelpers.findAndHookMethod(
                 SecondViewClass,
-                "b",
+                SecondViewMethodName,
                 View::class.java,
                 object : XC_MethodHook() {
                     override fun afterHookedMethod(param: MethodHookParam) {
                         val view = param.args[0] as View
+                        invertViewColor(view, gameBoxWhiteList, gameBoxKeepList)
+                    }
+                })
+
+            // 让图标颜色更深一点
+            XposedHelpers.findAndHookMethod(
+                AuditionViewClass,
+                if (appVersionCode >= 40000749) "M" else "a",
+                Context::class.java,
+                object : XC_MethodHook() {
+                    override fun afterHookedMethod(param: MethodHookParam) {
+                        val view = HookUtils.getValueByField(param.thisObject, "d") as View
+                        val parentView = view.parent
+                        HookUtils.log(parentView)
+                        if (parentView is ViewGroup) {
+                            val lastChild = parentView.getChildAt(parentView.childCount - 1)
+                            if (lastChild is ImageView && lastChild.drawable is VectorDrawable) {
+                                val oldDrawable = lastChild.drawable
+                                val newDrawable = LayerDrawable(
+                                    arrayOf(
+                                        oldDrawable,
+                                        oldDrawable,
+                                        oldDrawable,
+                                        oldDrawable,
+                                        oldDrawable
+                                    )
+                                )
+                                lastChild.setImageDrawable(newDrawable)
+                            }
+                        }
                         invertViewColor(view, gameBoxWhiteList, gameBoxKeepList)
                     }
                 })

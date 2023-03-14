@@ -9,9 +9,10 @@ android {
     defaultConfig {
         applicationId "cn.houkyo.wini"
         minSdk 31
+        //noinspection OldTargetApi
         targetSdk 31
-        versionCode 11402
-        versionName "1.1.4(11402)"
+        versionCode 11600
+        versionName "1.1.6(11600)"
         ndk {
             abiFilters 'arm64-v8a'
         }
@@ -31,6 +32,7 @@ android {
     kotlinOptions {
         jvmTarget = '1.8'
     }
+    namespace 'cn.houkyo.wini'
 }
 
 dependencies {

@@ -14,6 +14,7 @@ import android.view.ViewGroup
 import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.TextView
+import androidx.core.view.ViewCompat.animate
 import cn.houkyo.wini.models.ConfigModel
 import cn.houkyo.wini.utils.HookUtils
 import de.robv.android.xposed.XC_MethodHook
@@ -301,49 +302,39 @@ class MiuiHome(private val classLoader: ClassLoader, config: ConfigModel) {
             "com.miui.home.launcher.common.Utilities",
             classLoader
         ) ?: return
-        val LauncherStateClass = HookUtils.getClass(
-            "com.miui.home.launcher.LauncherState",
+        val DragViewClass = HookUtils.getClass(
+            "com.miui.home.launcher.DragView",
             classLoader
         ) ?: return
 
         var isShortcutMenuLayerBlurred = false
-        var dragLayer: ViewGroup? = null
-        var targetView: View? = null
-        var dragLayerBackground: Drawable? = null
+        var targetView: ViewGroup? = null
+        var dragView: View? = null
+        var blurBackground = true
 
         XposedBridge.hookAllMethods(
             ShortcutMenuLayerClass,
             "showShortcutMenu",
             object : XC_MethodHook() {
                 override fun beforeHookedMethod(param: MethodHookParam) {
-                    hideBlurDrawable()
                     val dragObject = param.args[0]
                     val dragViewInfo = XposedHelpers.callMethod(dragObject, "getDragInfo")
                     val iconIsInFolder =
                         XposedHelpers.callMethod(dragViewInfo, "isInFolder") as Boolean
                     if (iconIsInFolder) {
-                        return
-                    }
-                    // 文件夹内不模糊
-                    val iconIsApplicatoin =
-                        XposedHelpers.callMethod(dragViewInfo, "isApplicatoin") as Boolean
-                    val iconTitle =
-                        XposedHelpers.callMethod(dragViewInfo, "getTitle") as String
-
-                    if (!iconIsApplicatoin && !BLUR_ICON_APP_NAME.contains(iconTitle)) {
-                        return
+                        try {
+                            val isUserBlurWhenOpenFolder = XposedHelpers.callStaticMethod(
+                                BlurUtilsClass,
+                                "isUserBlurWhenOpenFolder"
+                            ) as Boolean
+                            blurBackground = !isUserBlurWhenOpenFolder
+                        } catch (e: Throwable) {
+                            // Do Nothing.
+                        }
+                    } else {
+                        blurBackground = true
                     }
                     val mLauncher = XposedHelpers.callStaticMethod(ApplicationClass, "getLauncher")
-
-                    val launcherStatusField = LauncherStateClass.getDeclaredField("ALL_APPS")
-                    launcherStatusField.isAccessible = true
-                    val allAppsStatus = launcherStatusField.get(null)
-                    val stateManager = XposedHelpers.callMethod(mLauncher, "getStateManager")
-                    val currentState = XposedHelpers.callMethod(stateManager, "getState")
-                    if (currentState == allAppsStatus) {
-                        return
-                    }
-
                     val systemUiController =
                         XposedHelpers.callMethod(mLauncher, "getSystemUiController")
                     val mWindow = HookUtils.getValueByField(systemUiController, "mWindow")
@@ -362,19 +353,21 @@ class MiuiHome(private val classLoader: ClassLoader, config: ConfigModel) {
                     valueAnimator.addUpdateListener { animator ->
                         val value = animator.animatedValue as Int
                         targetBlurView.setRenderEffect(renderEffectArray[value])
-                        XposedHelpers.callStaticMethod(
-                            BlurUtilsClass,
-                            "fastBlurDirectly",
-                            value / 50f,
-                            mWindow
-                        )
+                        if (blurBackground) {
+                            XposedHelpers.callStaticMethod(
+                                BlurUtilsClass,
+                                "fastBlurDirectly",
+                                value / 50f,
+                                mWindow
+                            )
+                        }
                     }
-                    val dragView =
+                    dragView =
                         XposedHelpers.callMethod(dragObject, "getDragView") as View
-                    targetView = XposedHelpers.callMethod(dragView, "getContent") as View
-                    dragLayer = targetBlurView.parent as ViewGroup
+                    targetView = XposedHelpers.callMethod(dragView, "getContent") as ViewGroup
                     valueAnimator.duration = 200
                     valueAnimator.start()
+                    hideBlurDrawable()
                     isShortcutMenuLayerBlurred = true
                 }
             })
@@ -385,25 +378,9 @@ class MiuiHome(private val classLoader: ClassLoader, config: ConfigModel) {
             object : XC_MethodHook() {
                 override fun beforeHookedMethod(param: MethodHookParam) {
                     if (isShortcutMenuLayerBlurred) {
-                        val dragObject = param.args[1]
-                        val dragView =
-                            XposedHelpers.callMethod(dragObject, "getDragView") as View
-                        val dragViewParent = dragView.parent as View
-                        val bitmap = Bitmap.createBitmap(
-                            dragLayer!!.width,
-                            dragLayer!!.height,
-                            Bitmap.Config.ARGB_8888
-                        )
-                        val canvas = Canvas(bitmap)
-                        val originalScale = dragView.scaleX
-                        dragView.scaleX = 1f
-                        dragView.scaleY = 1f
-                        dragViewParent.draw(canvas)
-                        dragView.scaleX = originalScale
-                        dragView.scaleY = originalScale
-                        dragLayerBackground =
-                            BitmapDrawable(dragLayer!!.context.resources, bitmap)
-                        targetView!!.alpha = 0f
+                        if (targetView != null) {
+                            targetView!!.transitionAlpha = 0f
+                        }
                     }
                 }
             })
@@ -418,21 +395,20 @@ class MiuiHome(private val classLoader: ClassLoader, config: ConfigModel) {
                             UtilitiesClass,
                             "isScreenCellsLocked"
                         ) as Boolean
-                        if (isLocked) {
-                            dragLayer?.background = dragLayerBackground
-                        } else {
-                            val valueAnimator = ValueAnimator.ofFloat(0f, 1f)
-                            valueAnimator.addListener(object : AnimatorListenerAdapter() {
-                                override fun onAnimationEnd(animation: Animator?) {
-                                    dragLayer?.background = dragLayerBackground
-                                }
-                            })
-                            valueAnimator.duration = 200
-                            valueAnimator.start()
+                        if (isLocked && dragView != null) {
+                            animate(dragView!!).scaleX(1f).scaleY(1f).setDuration(200).start()
                         }
                     }
                 }
             })
+
+        XposedBridge.hookAllMethods(DragViewClass, "remove", object : XC_MethodHook() {
+            override fun beforeHookedMethod(param: MethodHookParam) {
+                if (isShortcutMenuLayerBlurred) {
+                    param.result = null
+                }
+            }
+        })
 
         XposedBridge.hookAllMethods(
             ShortcutMenuClass,
@@ -441,7 +417,9 @@ class MiuiHome(private val classLoader: ClassLoader, config: ConfigModel) {
                 override fun beforeHookedMethod(param: MethodHookParam) {
                     if (isShortcutMenuLayerBlurred) {
                         isShortcutMenuLayerBlurred = false
-                        targetView!!.alpha = 1f
+                        if (targetView != null) {
+                            targetView!!.transitionAlpha = 1f
+                        }
                         val mLauncher =
                             XposedHelpers.callStaticMethod(ApplicationClass, "getLauncher")
                         val systemUiController =
@@ -463,6 +441,7 @@ class MiuiHome(private val classLoader: ClassLoader, config: ConfigModel) {
             object : XC_MethodHook() {
                 override fun beforeHookedMethod(param: MethodHookParam) {
                     if (isShortcutMenuLayerBlurred) {
+                        val editStateChangeReason = param.args[0]
                         val shortcutMenuLayer = param.thisObject as FrameLayout
                         val mLauncher =
                             XposedHelpers.callStaticMethod(ApplicationClass, "getLauncher")
@@ -485,26 +464,37 @@ class MiuiHome(private val classLoader: ClassLoader, config: ConfigModel) {
                         valueAnimator.addUpdateListener { animator ->
                             val value = animator.animatedValue as Int
                             targetBlurView.setRenderEffect(renderEffectArray[value])
-                            XposedHelpers.callStaticMethod(
-                                BlurUtilsClass,
-                                "fastBlurDirectly",
-                                value / 50f,
-                                mWindow
-                            )
+                            if (blurBackground) {
+                                XposedHelpers.callStaticMethod(
+                                    BlurUtilsClass,
+                                    "fastBlurDirectly",
+                                    value / 50f,
+                                    mWindow
+                                )
+                            }
                         }
                         valueAnimator.addListener(object : AnimatorListenerAdapter() {
                             override fun onAnimationEnd(animation: Animator?) {
                                 shortcutMenuLayer.background = null
                                 showBlurDrawable()
-                                targetView!!.alpha = 1f
+                                targetView!!.transitionAlpha = 1f
                                 targetBlurView.setRenderEffect(null)
-                                dragLayer?.background = null
+                                isShortcutMenuLayerBlurred = false
+                                if (editStateChangeReason != null && editStateChangeReason.toString() != "drag_over_threshold") {
+                                    XposedHelpers.callMethod(dragView, "remove")
+                                }
                             }
                         })
                         valueAnimator.duration = 200
                         valueAnimator.start()
+
+                        if (editStateChangeReason != null) {
+                            HookUtils.log(editStateChangeReason)
+                        } else {
+                            isShortcutMenuLayerBlurred = false
+                            XposedHelpers.callMethod(dragView, "remove")
+                        }
                     }
-                    isShortcutMenuLayerBlurred = false
                 }
             })
 
